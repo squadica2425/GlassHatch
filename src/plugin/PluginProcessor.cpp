@@ -20,6 +20,40 @@ juce::AudioProcessorValueTreeState::ParameterLayout GlassHatchProcessor::createL
     l.add(std::make_unique<F>(PID{"dec", 1}, "Decay", NR(0.001f, 5.f, 0.f, 0.4f), 0.3f));
     l.add(std::make_unique<F>(PID{"sus", 1}, "Sustain", NR(0.f, 1.f), 0.7f));
     l.add(std::make_unique<F>(PID{"rel", 1}, "Release", NR(0.001f, 8.f, 0.f, 0.4f), 0.3f));
+    l.add(std::make_unique<juce::AudioParameterBool>(PID{"sync", 1}, "Hard Sync (A->B)", false));
+    l.add(std::make_unique<F>(PID{"fm", 1}, "FM (A->B)", NR(0.f, 1.f), 0.f));
+    l.add(std::make_unique<F>(PID{"ring", 1}, "Ring Mod", NR(0.f, 1.f), 0.f));
+
+    juce::StringArray shapes, srcs, dsts;
+    for (auto* n : kLfoShapeNames) shapes.add(n);
+    for (auto* n : kSrcNames) srcs.add(n);
+    for (auto* n : kDstNames) dsts.add(n);
+    for (int i = 1; i <= 3; ++i) {
+        l.add(std::make_unique<F>(PID{"lfo" + juce::String(i) + "Rate", 1}, "LFO " + juce::String(i) + " Rate",
+                                  NR(0.05f, 30.f, 0.f, 0.4f), 0.5f * float(i)));
+        l.add(std::make_unique<juce::AudioParameterChoice>(PID{"lfo" + juce::String(i) + "Shape", 1},
+                                                           "LFO " + juce::String(i) + " Shape", shapes, 0));
+    }
+    // Default routings are wired up but silent (amount 0): LFO1->PosA, LFO2->Cutoff, Env->Cutoff.
+    const int defSrc[kNumSlots] = {SrcLfo1, SrcLfo2, SrcEnv, SrcNone, SrcNone, SrcNone};
+    const int defDst[kNumSlots] = {DstPosA, DstCutoff, DstCutoff, DstNone, DstNone, DstNone};
+    for (int i = 0; i < kNumSlots; ++i) {
+        const auto n = "m" + juce::String(i + 1);
+        const auto h = "Mod " + juce::String(i + 1);
+        l.add(std::make_unique<juce::AudioParameterChoice>(PID{n + "Src", 1}, h + " Source", srcs, defSrc[i]));
+        l.add(std::make_unique<juce::AudioParameterChoice>(PID{n + "Dst", 1}, h + " Dest", dsts, defDst[i]));
+        l.add(std::make_unique<F>(PID{n + "Amt", 1}, h + " Amount", NR(-1.f, 1.f), 0.f));
+    }
+
+    l.add(std::make_unique<F>(PID{"chRate", 1}, "Chorus Rate", NR(0.1f, 3.f), 0.6f));
+    l.add(std::make_unique<F>(PID{"chDepth", 1}, "Chorus Depth", NR(0.f, 1.f), 0.5f));
+    l.add(std::make_unique<F>(PID{"chMix", 1}, "Chorus Mix", NR(0.f, 1.f), 0.f));
+    l.add(std::make_unique<F>(PID{"dlTime", 1}, "Delay Time", NR(20.f, 1500.f, 0.f, 0.5f), 375.f));
+    l.add(std::make_unique<F>(PID{"dlFb", 1}, "Delay Feedback", NR(0.f, 0.95f), 0.45f));
+    l.add(std::make_unique<F>(PID{"dlMix", 1}, "Delay Mix", NR(0.f, 1.f), 0.f));
+    l.add(std::make_unique<F>(PID{"rvSize", 1}, "Reverb Size", NR(0.f, 1.f), 0.6f));
+    l.add(std::make_unique<F>(PID{"rvMix", 1}, "Reverb Mix", NR(0.f, 1.f), 0.f));
+
     l.add(std::make_unique<juce::AudioParameterInt>(PID{"seed", 1}, "Seed", 0, 99999, 1));
     l.add(std::make_unique<juce::AudioParameterChoice>(
         PID{"style", 1}, "Style", juce::StringArray{"Glass", "Sub Growl", "Metallic", "Vocal"}, 0));
@@ -39,6 +73,10 @@ GlassHatchProcessor::GlassHatchProcessor()
 
 void GlassHatchProcessor::prepareToPlay(double sampleRate, int) {
     synth.setCurrentPlaybackSampleRate(sampleRate);
+    chorus.prepare(sampleRate);
+    delay.prepare(sampleRate);
+    reverb.setSampleRate(sampleRate);
+    reverb.reset();
 }
 
 bool GlassHatchProcessor::isBusesLayoutSupported(const BusesLayout& l) const {
@@ -61,7 +99,34 @@ void GlassHatchProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
         lastSeed = seed; lastStyle = style;
         requestRegeneration(seed, style);
     }
+    for (const auto meta : midi) {
+        const auto m = meta.getMessage();
+        if (m.isController() && m.getControllerNumber() == 1)
+            ctx.modWheel.store(float(m.getControllerValue()) / 127.f);
+    }
     synth.renderNextBlock(buffer, midi, 0, buffer.getNumSamples());
+
+    // ---- effects: chorus -> ping-pong delay -> reverb ----
+    auto val = [this](const char* id) { return apvts.getRawParameterValue(id)->load(); };
+    const int n = buffer.getNumSamples();
+    float* L = buffer.getWritePointer(0);
+    float* R = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : buffer.getWritePointer(0);
+    const float chMix = val("chMix"), dlMix = val("dlMix"), rvMix = val("rvMix");
+    if (chMix > 0.001f) {
+        chorus.set(val("chRate"), val("chDepth"), chMix);
+        for (int i = 0; i < n; ++i) chorus.process(L[i], R[i]);
+    }
+    if (dlMix > 0.001f) {
+        delay.set(val("dlTime"), val("dlFb"), dlMix);
+        for (int i = 0; i < n; ++i) delay.process(L[i], R[i]);
+    }
+    if (rvMix > 0.001f) {
+        juce::Reverb::Parameters rp;
+        rp.roomSize = val("rvSize"); rp.damping = 0.5f; rp.width = 1.f;
+        rp.wetLevel = rvMix * 0.4f; rp.dryLevel = 1.f; rp.freezeMode = 0.f;
+        reverb.setParameters(rp);
+        reverb.processStereo(L, R, n);
+    }
 }
 
 void GlassHatchProcessor::getStateInformation(juce::MemoryBlock& dest) {

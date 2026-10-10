@@ -1,5 +1,7 @@
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_audio_basics/juce_audio_basics.h>
+#include "../dsp/Effects.h"
 #include "Voice.h"
 
 namespace gh {
@@ -42,6 +44,9 @@ private:
 
     SynthContext ctx;
     juce::Synthesiser synth;
+    Chorus chorus;
+    PingPongDelay delay;
+    juce::Reverb reverb;
     int lastSeed = -1, lastStyle = -1;
     juce::ThreadPool pool{1};  // keep last: destroyed first, waits for running jobs
 };

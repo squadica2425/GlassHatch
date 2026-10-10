@@ -16,7 +16,12 @@ data from either are used; everything is generated procedurally.
 - **UI.** Serum/Current-style: each oscillator shows its full 3D frame stack with the current
   frame highlighted, plus the harmonic spectrum of the interpolated frame. Drag across the view to
   scrub the position.
-- **Voice.** A/B oscillators with detune and mix, drive, resonant SVF low-pass, ADSR, 8 voices.
+- **Oscillator interaction.** Hard sync (B restarts when A wraps, sub-sample accurate), FM (A -> B
+  phase modulation) and ring mod (crossfade to A x B).
+- **Modulation.** 3 LFOs (sine/tri/saw/square/S&H) and a 6-slot matrix. Sources: LFO 1-3, amp env,
+  velocity, mod wheel, key, per-note random. Destinations: pos A/B, FM, ring, mix, cutoff, reso, drive, pitch.
+- **Effects.** Chorus, dubby ping-pong delay (darkening feedback, gliding time), reverb.
+- **Voice.** 8 voices, drive into a resonant SVF low-pass, ADSR.
 
 ## Build
 ```bash
@@ -29,7 +34,7 @@ cmake -B build && cmake --build build --config Release
 ```
 
 ## Status
-- DSP core, generator and tests: written and passing.
+- DSP core, generator, sync/FM/ring, LFOs, matrix, chorus/delay and tests: written and passing (`ctest`).
 - JUCE plugin and UI: written but not yet compiled; expect small fixes on first build.
 
 ## Licensing

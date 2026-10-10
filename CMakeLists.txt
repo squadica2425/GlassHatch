@@ -10,6 +10,8 @@ if(GH_BUILD_TESTS)
   enable_testing()
   add_executable(gh_dsp_test tests/dsp_test.cpp)
   add_test(NAME dsp COMMAND gh_dsp_test)
+  add_executable(gh_synth_test tests/synth_test.cpp)
+  add_test(NAME synth COMMAND gh_synth_test)
 endif()
 
 if(GH_BUILD_PLUGIN)
